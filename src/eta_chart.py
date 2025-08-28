@@ -7,7 +7,10 @@ def _empty_chart():
 
 def _midnight_layers(events_df: pd.DataFrame):
     if events_df.empty or "created_at" not in events_df.columns:
-        return alt.Chart(pd.DataFrame({"x": []})).mark_rule(), alt.Chart(pd.DataFrame({"x": []})).mark_text()
+        return (
+            alt.Chart(pd.DataFrame({"x": []})).mark_rule(),
+            alt.Chart(pd.DataFrame({"x": []})).mark_text(),
+        )
 
     min_time = pd.to_datetime(events_df["created_at"]).min().normalize()
     max_time = pd.to_datetime(events_df["created_at"]).max().normalize() + pd.Timedelta(days=1)
@@ -18,18 +21,29 @@ def _midnight_layers(events_df: pd.DataFrame):
         "day_label": midnights.strftime("%b %d"),
     })
 
-    # Yellow dashed lines
+    # Yellow dashed vertical rules
     rules = (
         alt.Chart(midnight_df)
         .mark_rule(strokeDash=[4, 2], color="yellow")
         .encode(x="midnight:T")
     )
 
-    # Yellow labels
+    # Yellow text labels
     labels = (
         alt.Chart(midnight_df)
-        .mark_text(align="left", baseline="bottom", dy=-4, dx=2, color="yellow", fontWeight="bold")
-        .encode(x="midnight:T", y=alt.value(1), text="day_label")
+        .mark_text(
+            align="left",
+            baseline="bottom",
+            dy=-4,
+            dx=2,
+            color="yellow",     # force yellow
+            fontWeight="bold",
+        )
+        .encode(
+            x="midnight:T",
+            y=alt.value(1),     # pin to top of chart
+            text="day_label"
+        )
     )
 
     return rules, labels
@@ -180,8 +194,8 @@ def eta_timeline_chart(
     # --- Midnight guides (assumes you have this helper) ---
     midnight_rules, midnight_labels = _midnight_layers(events_df)
     # Keep them subtle
-    midnight_rules = midnight_rules.mark_rule(opacity=0.45)
-    midnight_labels = midnight_labels.mark_text()
+    midnight_rules = midnight_rules.mark_rule(opacity=0.45, color="yellow")
+    midnight_labels = midnight_labels.mark_text(color="yellow")
 
     # --- Telematics layers (assumes pre-filtered df + your helper) ---
     # If your _telematics_layers returns (rules, labels) that already have encodings,
