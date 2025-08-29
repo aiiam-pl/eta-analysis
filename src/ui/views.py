@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import altair as alt
+import pydeck as pdk
 
 from src.events import (
     load_eta_events_for_transport,
@@ -25,6 +26,119 @@ def _pick_table_columns(table_df: pd.DataFrame) -> pd.DataFrame:
     cols = [c for c in preferred_cols if c in table_df.columns]
     cols += [c for c in table_df.columns if c not in cols]
     return table_df[cols]
+def _telematics_points_df_single(telematics_events_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expects the per-transport telematics DF returned by load_telematics_events_for_transport,
+    which already normalizes to columns: created_at (UTC), type, lat, lon (optional).
+    Returns rows with valid lat/lon only.
+    """
+    if not isinstance(telematics_events_df, pd.DataFrame) or telematics_events_df.empty:
+        return pd.DataFrame(columns=["lat", "lon", "type", "created_at"])
+
+    gdf = telematics_events_df.copy()
+
+    # If lat/lon are not present but position_coordinates is, try to parse (safety net)
+    if ("lat" not in gdf.columns or "lon" not in gdf.columns) and "position_coordinates" in gdf.columns:
+        coords = gdf["position_coordinates"].astype(str).str.strip().str.strip("()").str.split(",", n=1, expand=True)
+        if isinstance(coords, pd.DataFrame) and coords.shape[1] == 2:
+            gdf["lat"] = pd.to_numeric(coords[0], errors="coerce")
+            gdf["lon"] = pd.to_numeric(coords[1], errors="coerce")
+
+    gdf = gdf.dropna(subset=["lat", "lon"]).copy()
+
+    # Ensure expected columns exist
+    if "type" not in gdf.columns:
+        gdf["type"] = "event"
+    if "created_at" in gdf.columns:
+        gdf["created_at"] = pd.to_datetime(gdf["created_at"], errors="coerce", utc=True)
+
+    return gdf
+
+def summary_panel(trow) -> None:
+    with st.container():
+        c1, c2, c3, c4 = st.columns(4)
+        c1.subheader(f"Loading: {trow['LOADING_LOCALITY']}, {trow['LOADING_COUNTRY']}")
+        c2.subheader(f"Unloading: {trow['UNLOADING_LOCALITY']}, {trow['UNLOADING_COUNTRY']}")
+        c1.metric("Distance (km)", int(trow["DISTANCE"]))
+        c2.metric("Duration (min)", int(trow["DURATION"]))
+        c3.metric("Avg diff v2 (min)", trow["AVERAGE_ETA_DIFF_V2"])
+        c4.metric("Avg diff v3 (min)", trow["AVERAGE_ETA_DIFF_V3"])
+
+def _render_single_transport_telematics_map(telematics_events_df: pd.DataFrame, title: str):
+    gdf = _telematics_points_df_single(telematics_events_df)
+    if gdf.empty:
+        st.info("No telematic events with coordinates for this transport.")
+        return
+
+    # Sort by created_at so the line follows the timeline
+    if "created_at" in gdf.columns:
+        gdf = gdf.sort_values("created_at")
+
+    # Colors per 'type'
+    types = sorted(gdf["type"].astype(str).fillna("unknown").unique())
+    palette = [[31,119,180],[255,127,14],[44,160,44],[214,39,40],
+               [148,103,189],[140,86,75],[227,119,194],[127,127,127],
+               [188,189,34],[23,190,207]]
+    cmap = {t: palette[i % len(palette)] for i, t in enumerate(types)}
+    colors = gdf["type"].map(cmap).tolist()
+    gdf[["color_r","color_g","color_b"]] = pd.DataFrame(colors, index=gdf.index)
+
+    view_state = pdk.ViewState(
+        latitude=float(gdf["lat"].median()),
+        longitude=float(gdf["lon"].median()),
+        zoom=6, pitch=0, bearing=0
+    )
+
+    # OSM basemap
+    tile_layer = pdk.Layer(
+        "TileLayer",
+        data="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        minZoom=0, maxZoom=19, tileSize=256,
+    )
+
+    # Scatter points
+    points_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=gdf,
+        get_position="[lon, lat]",
+        get_fill_color="[color_r, color_g, color_b, 190]",
+        get_radius=120,
+        radius_min_pixels=2,
+        radius_max_pixels=24,
+        pickable=True,
+        stroked=True,
+        get_line_color=[0, 0, 0],
+        line_width_min_pixels=0.5,
+    )
+
+    # Line connecting all points in time order
+    path_data = [{"path": gdf[["lon", "lat"]].values.tolist()}]
+    path_layer = pdk.Layer(
+        "PathLayer",
+        data=path_data,
+        get_path="path",
+        get_width=4,
+        get_color=[50, 50, 200, 160],
+        width_min_pixels=2,
+    )
+
+    tooltip = {
+        "html": "<b>{type}</b><br/>lat: {lat}<br/>lon: {lon}<br/>{created_at}",
+        "style": {"backgroundColor":"rgba(0,0,0,0.85)","color":"white"}
+    }
+
+    st.subheader(title)
+    st.pydeck_chart(
+        pdk.Deck(
+            layers=[tile_layer, path_layer, points_layer],  # line under points
+            initial_view_state=view_state,
+            tooltip=tooltip,
+            map_provider=None,
+            map_style=None,
+        ),
+        use_container_width=True,
+    )
+    st.caption("Basemap © OpenStreetMap contributors")
 
 def render_transport_view_or_distribution(fdf: pd.DataFrame, events_all: pd.DataFrame | None, telem_all: pd.DataFrame | None):
     st.subheader("Select a transport")
@@ -65,9 +179,18 @@ def render_transport_view_or_distribution(fdf: pd.DataFrame, events_all: pd.Data
                 return
 
             reached_unloading_at = find_unloading_time(selected_row)
+
+            summary_panel(selected_row)
+
             st.subheader("ETA timeline")
             chart = eta_timeline_chart(events_df, telematics_events_df, reached_unloading_at, height=420)
             st.altair_chart(chart, use_container_width=True)
+
+            if isinstance(telematics_events_df, pd.DataFrame) and not telematics_events_df.empty:
+                _render_single_transport_telematics_map(
+                    telematics_events_df,
+                    title=f"Telematics events for transport {selected_id}"
+                )
 
             # ETA events table
             try:

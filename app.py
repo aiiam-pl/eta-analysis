@@ -1,8 +1,6 @@
 # app.py
-import pandas as pd
-import numpy as np
+
 import streamlit as st
-import altair as alt  # charts used by submodules
 
 from src.ui.loaders import load_transports_ui, load_eta_ui, load_telematics_ui
 from src.ui.filters import apply_quick_filters
