@@ -11,6 +11,8 @@ from src.events import (
     find_unloading_time,
 )
 from src.eta_chart import eta_timeline_chart
+from src.helpers import _wkb_point_to_lonlat
+
 
 def _first_df(*candidates):
     for c in candidates:
@@ -64,13 +66,12 @@ def summary_panel(trow) -> None:
         c3.metric("Avg diff v2 (min)", trow["AVERAGE_ETA_DIFF_V2"])
         c4.metric("Avg diff v3 (min)", trow["AVERAGE_ETA_DIFF_V3"])
 
-def _render_single_transport_telematics_map(telematics_events_df: pd.DataFrame, title: str):
+def _render_single_transport_telematics_map(trow: pd.DataFrame, telematics_events_df: pd.DataFrame, title: str):
     gdf = _telematics_points_df_single(telematics_events_df)
     if gdf.empty:
         st.info("No telematic events with coordinates for this transport.")
         return
 
-    # Sort by created_at so the line follows the timeline
     if "created_at" in gdf.columns:
         gdf = gdf.sort_values("created_at")
 
@@ -83,20 +84,73 @@ def _render_single_transport_telematics_map(telematics_events_df: pd.DataFrame, 
     colors = gdf["type"].map(cmap).tolist()
     gdf[["color_r","color_g","color_b"]] = pd.DataFrame(colors, index=gdf.index)
 
-    view_state = pdk.ViewState(
-        latitude=float(gdf["lat"].median()),
-        longitude=float(gdf["lon"].median()),
-        zoom=6, pitch=0, bearing=0
+    # Decode loading/unloading WKB
+    load_lonlat = _wkb_point_to_lonlat(trow.get("LOADING_COORDINATES"))
+    unload_lonlat = _wkb_point_to_lonlat(trow.get("UNLOADING_COORDINATES"))
+
+    # Build concentric ring features: 5 km and 20 km
+    rings = []
+    if load_lonlat is not None:
+        rings.append({
+            "label": "Loading 5km",
+            "lon": float(load_lonlat[0]),
+            "lat": float(load_lonlat[1]),
+            "radius_m": 5_000,
+            "line_color": [34, 139, 34, 220],  # green-ish
+        })
+        rings.append({
+            "label": "Loading 20km",
+            "lon": float(load_lonlat[0]),
+            "lat": float(load_lonlat[1]),
+            "radius_m": 20_000,
+            "line_color": [34, 139, 34, 160],
+        })
+
+    if unload_lonlat is not None:
+        rings.append({
+            "label": "Unloading 5km",
+            "lon": float(unload_lonlat[0]),
+            "lat": float(unload_lonlat[1]),
+            "radius_m": 5_000,
+            "line_color": [220, 20, 60, 220],  # crimson
+        })
+        rings.append({
+            "label": "Unloading 20km",
+            "lon": float(unload_lonlat[0]),
+            "lat": float(unload_lonlat[1]),
+            "radius_m": 20_000,
+            "line_color": [220, 20, 60, 160],
+        })
+
+    rings_df = pd.DataFrame(rings) if rings else pd.DataFrame(columns=["label", "lon", "lat", "radius_m", "line_color"])
+
+    # Circle outlines (stroked only, bold, empty fill)
+    lu_rings_layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=rings_df,
+        get_position="[lon, lat]",
+        get_radius="radius_m",  # meters
+        stroked=True,
+        filled=False,  # empty circles
+        get_line_color="line_color",
+        get_line_width=8,  # bold outline (pixels)
+        line_width_min_pixels=4,
+        line_width_max_pixels=12,
+        pickable=True,
     )
 
-    # OSM basemap
+    # View
+    center_lat = float(gdf["lat"].median())
+    center_lon = float(gdf["lon"].median())
+    view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=6, pitch=0, bearing=0)
+
+    # Layers
     tile_layer = pdk.Layer(
         "TileLayer",
         data="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
         minZoom=0, maxZoom=19, tileSize=256,
     )
 
-    # Scatter points
     points_layer = pdk.Layer(
         "ScatterplotLayer",
         data=gdf,
@@ -111,7 +165,6 @@ def _render_single_transport_telematics_map(telematics_events_df: pd.DataFrame, 
         line_width_min_pixels=0.5,
     )
 
-    # Line connecting all points in time order
     path_data = [{"path": gdf[["lon", "lat"]].values.tolist()}]
     path_layer = pdk.Layer(
         "PathLayer",
@@ -126,11 +179,16 @@ def _render_single_transport_telematics_map(telematics_events_df: pd.DataFrame, 
         "html": "<b>{type}</b><br/>lat: {lat}<br/>lon: {lon}<br/>{created_at}",
         "style": {"backgroundColor":"rgba(0,0,0,0.85)","color":"white"}
     }
+    # A separate tooltip for loading/unloading (label)
+    lu_tooltip = {
+        "html": "<b>{label}</b><br/>lat: {lat}<br/>lon: {lon}",
+        "style": {"backgroundColor":"rgba(0,0,0,0.85)","color":"white"}
+    }
 
     st.subheader(title)
     st.pydeck_chart(
         pdk.Deck(
-            layers=[tile_layer, path_layer, points_layer],  # line under points
+            layers=[tile_layer, path_layer, points_layer, lu_rings_layer],
             initial_view_state=view_state,
             tooltip=tooltip,
             map_provider=None,
@@ -188,6 +246,7 @@ def render_transport_view_or_distribution(fdf: pd.DataFrame, events_all: pd.Data
 
             if isinstance(telematics_events_df, pd.DataFrame) and not telematics_events_df.empty:
                 _render_single_transport_telematics_map(
+                    selected_row,
                     telematics_events_df,
                     title=f"Telematics events for transport {selected_id}"
                 )
