@@ -4,19 +4,29 @@ import streamlit as st
 
 def apply_quick_filters(df: pd.DataFrame) -> pd.DataFrame:
     fdf = df.copy()
+
+    # First row of filters
     cols = st.columns([1, 1, 2, 2])
 
     # LOADING_COUNTRY
     if "LOADING_COUNTRY" in fdf.columns:
         with cols[0]:
-            sel = st.multiselect("LOADING_COUNTRY", sorted(fdf["LOADING_COUNTRY"].dropna().astype(str).unique()), [])
+            sel = st.multiselect(
+                "LOADING_COUNTRY",
+                sorted(fdf["LOADING_COUNTRY"].dropna().astype(str).unique()),
+                []
+            )
             if sel:
                 fdf = fdf[fdf["LOADING_COUNTRY"].astype(str).isin(sel)]
 
     # UNLOADING_COUNTRY
     if "UNLOADING_COUNTRY" in fdf.columns:
         with cols[1]:
-            sel = st.multiselect("UNLOADING_COUNTRY", sorted(fdf["UNLOADING_COUNTRY"].dropna().astype(str).unique()), [])
+            sel = st.multiselect(
+                "UNLOADING_COUNTRY",
+                sorted(fdf["UNLOADING_COUNTRY"].dropna().astype(str).unique()),
+                []
+            )
             if sel:
                 fdf = fdf[fdf["UNLOADING_COUNTRY"].astype(str).isin(sel)]
 
@@ -43,7 +53,9 @@ def apply_quick_filters(df: pd.DataFrame) -> pd.DataFrame:
                 fdf = fdf[fdf["STARTED_AT"].dt.normalize().isin(selected_days)]
 
             # Month filter
-            available_months = sorted(fdf["STARTED_AT"].dropna().dt.to_period("M").unique(), reverse=True)
+            available_months = sorted(
+                fdf["STARTED_AT"].dropna().dt.to_period("M").unique(), reverse=True
+            )
             selected_months = st.multiselect(
                 "STARTED_AT months",
                 options=available_months,
@@ -51,5 +63,19 @@ def apply_quick_filters(df: pd.DataFrame) -> pd.DataFrame:
             )
             if selected_months:
                 fdf = fdf[fdf["STARTED_AT"].dt.to_period("M").isin(selected_months)]
+
+    # Second row: VEHICLE_SIZE
+    if "VEHICLE_SIZE" in fdf.columns:
+        vcols = st.columns([1])
+        with vcols[0]:
+            vs_options = sorted(fdf["VEHICLE_SIZE"].dropna().astype(str).unique())
+            default_sel = [v for v in vs_options if v not in ("1_bus", "4_any_size")]
+            selected_sizes = st.multiselect(
+                "VEHICLE_SIZE",
+                options=vs_options,
+                default=default_sel
+            )
+            if selected_sizes:
+                fdf = fdf[fdf["VEHICLE_SIZE"].astype(str).isin(selected_sizes)]
 
     return fdf
